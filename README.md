@@ -45,7 +45,7 @@ Quick Start
 
 Clone the repository:
 
-bashCopygit clone https://github.com/JivantLoganathan/nexus-ids.git
+bashCopygit clone https://github.com/jivant2005/nexus-ids.git
 cd nexus-ids
 
 Install dependencies:
