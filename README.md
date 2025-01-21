@@ -130,20 +130,16 @@ Rich library for the beautiful terminal interface
 PyGame for audio alert system
 All contributors and testers
 
-Support 💬
-For support, feature requests, or bug reports:
-
-Open an issue
-Contact: your.email@example.com
-Join our Discord community: [Discord Invite Link]
-
-Roadmap 🗺️
-
- Windows support
- Machine learning-based threat detection
- Custom rule creation interface
- Network topology mapping
- API integration capabilities
- Extended protocol support
 
 Screenshots 📸
+DASHBOARD:
+![image](https://github.com/user-attachments/assets/bf24ab70-72c2-4ec1-bcbe-7495f6abab09)
+ALERT:
+![image](https://github.com/user-attachments/assets/3fa1c71e-5a8d-4b66-8a5f-b3dbbd121abc)
+LOG FILE:
+![image](https://github.com/user-attachments/assets/6b5e6553-5818-4763-929c-c5f971f9a6b1)
+![image](https://github.com/user-attachments/assets/1092563c-52bf-4014-9573-ffe4bb52ca93)
+
+
+
+
