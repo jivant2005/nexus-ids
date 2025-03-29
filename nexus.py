@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import joblib
 import random
 import time
 import uuid
@@ -8,8 +7,10 @@ import datetime
 import os
 import curses
 import threading
-from sklearn.ensemble import RandomForestClassifier
+import sys
+import json
 from collections import deque
+from ml_engine import MLDetectionEngine, NetworkPacket, FEATURE_COLUMNS
 
 # Set up terminal colors
 class Colors:
@@ -32,130 +33,6 @@ class Colors:
     BG_CYAN = '\033[46m'
     BG_WHITE = '\033[47m'
 
-# Sample feature columns that our NIDS will use
-FEATURE_COLUMNS = [
-    'duration', 'protocol_type', 'service', 'flag', 'src_bytes', 'dst_bytes',
-    'land', 'wrong_fragment', 'urgent', 'hot', 'num_failed_logins',
-    'logged_in', 'num_compromised', 'root_shell', 'su_attempted', 'num_root',
-    'num_file_creations', 'num_shells', 'num_access_files', 'num_outbound_cmds',
-    'is_host_login', 'is_guest_login', 'count', 'srv_count', 'serror_rate',
-    'srv_serror_rate', 'rerror_rate', 'srv_rerror_rate', 'same_srv_rate',
-    'diff_srv_rate', 'srv_diff_host_rate', 'dst_host_count', 'dst_host_srv_count',
-    'dst_host_same_srv_rate', 'dst_host_diff_srv_rate', 'dst_host_same_src_port_rate',
-    'dst_host_srv_diff_host_rate', 'dst_host_serror_rate', 'dst_host_srv_serror_rate',
-    'dst_host_rerror_rate', 'dst_host_srv_rerror_rate'
-]
-
-class NetworkPacket:
-    def __init__(self, src_ip=None, dst_ip=None, protocol=None):
-        self.id = str(uuid.uuid4())[:8]
-        self.timestamp = datetime.datetime.now()
-        self.src_ip = src_ip or f"192.168.1.{random.randint(1, 254)}"
-        self.dst_ip = dst_ip or f"10.0.0.{random.randint(1, 254)}"
-        self.protocol = protocol or random.choice(['tcp', 'udp', 'icmp'])
-        self.service = random.choice(['http', 'ftp', 'ssh', 'dns', 'smtp', 'telnet'])
-        self.flag = random.choice(['SF', 'REJ', 'S0', 'RSTO'])
-        self.src_bytes = random.randint(100, 10000)
-        self.dst_bytes = random.randint(100, 5000)
-        self.is_attack = random.random() < 0.2  # 20% chance of being an attack
-        
-        # Generate all required features for ML model
-        self.features = self._generate_features()
-        
-    def _generate_features(self):
-        """Generate all features needed for the ML model"""
-        features = {
-            'duration': random.randint(0, 58329),
-            'protocol_type': self.protocol,
-            'service': self.service,
-            'flag': self.flag,
-            'src_bytes': self.src_bytes,
-            'dst_bytes': self.dst_bytes,
-            'land': random.choice([0, 1]) if self.is_attack else 0,
-            'wrong_fragment': random.choice([0, 1]) if self.is_attack else 0,
-            'urgent': random.choice([0, 1]) if self.is_attack else 0,
-            'hot': random.randint(0, 30) if self.is_attack else 0,
-            'num_failed_logins': random.randint(0, 5) if self.is_attack else 0,
-            'logged_in': random.choice([0, 1]),
-            'num_compromised': random.randint(0, 7) if self.is_attack else 0,
-            'root_shell': random.choice([0, 1]) if self.is_attack else 0,
-            'su_attempted': random.choice([0, 1]) if self.is_attack else 0,
-            'num_root': random.randint(0, 7) if self.is_attack else 0,
-            'num_file_creations': random.randint(0, 9) if self.is_attack else 0,
-            'num_shells': random.randint(0, 5) if self.is_attack else 0,
-            'num_access_files': random.randint(0, 8) if self.is_attack else 0,
-            'num_outbound_cmds': 0,  # Always 0 in the KDD dataset
-            'is_host_login': random.choice([0, 1]) if self.is_attack else 0,
-            'is_guest_login': random.choice([0, 1]),
-            'count': random.randint(1, 511),
-            'srv_count': random.randint(1, 511),
-        }
-        
-        # Attack-related rate features
-        if self.is_attack:
-            features.update({
-                'serror_rate': random.uniform(0.7, 1.0),
-                'srv_serror_rate': random.uniform(0.7, 1.0),
-                'rerror_rate': random.uniform(0.7, 1.0),
-                'srv_rerror_rate': random.uniform(0.7, 1.0),
-                'same_srv_rate': random.uniform(0, 0.3),
-                'diff_srv_rate': random.uniform(0.7, 1.0),
-                'srv_diff_host_rate': random.uniform(0.7, 1.0),
-                'dst_host_count': random.randint(1, 255),
-                'dst_host_srv_count': random.randint(1, 255),
-                'dst_host_same_srv_rate': random.uniform(0, 0.3),
-                'dst_host_diff_srv_rate': random.uniform(0.7, 1.0),
-                'dst_host_same_src_port_rate': random.uniform(0, 0.3),
-                'dst_host_srv_diff_host_rate': random.uniform(0.7, 1.0),
-                'dst_host_serror_rate': random.uniform(0.7, 1.0),
-                'dst_host_srv_serror_rate': random.uniform(0.7, 1.0),
-                'dst_host_rerror_rate': random.uniform(0.7, 1.0),
-                'dst_host_srv_rerror_rate': random.uniform(0.7, 1.0)
-            })
-        else:
-            features.update({
-                'serror_rate': random.uniform(0, 0.3),
-                'srv_serror_rate': random.uniform(0, 0.3),
-                'rerror_rate': random.uniform(0, 0.3),
-                'srv_rerror_rate': random.uniform(0, 0.3),
-                'same_srv_rate': random.uniform(0.7, 1.0),
-                'diff_srv_rate': random.uniform(0, 0.3),
-                'srv_diff_host_rate': random.uniform(0, 0.3),
-                'dst_host_count': random.randint(1, 255),
-                'dst_host_srv_count': random.randint(1, 255),
-                'dst_host_same_srv_rate': random.uniform(0.7, 1.0),
-                'dst_host_diff_srv_rate': random.uniform(0, 0.3),
-                'dst_host_same_src_port_rate': random.uniform(0.7, 1.0),
-                'dst_host_srv_diff_host_rate': random.uniform(0, 0.3),
-                'dst_host_serror_rate': random.uniform(0, 0.3),
-                'dst_host_srv_serror_rate': random.uniform(0, 0.3),
-                'dst_host_rerror_rate': random.uniform(0, 0.3),
-                'dst_host_srv_rerror_rate': random.uniform(0, 0.3)
-            })
-            
-        return features
-    
-    def get_feature_vector(self):
-        """Convert categorical features to numerical for ML model"""
-        vector = {}
-        for feature in FEATURE_COLUMNS:
-            if feature == 'protocol_type':
-                vector['protocol_type_tcp'] = 1 if self.features[feature] == 'tcp' else 0
-                vector['protocol_type_udp'] = 1 if self.features[feature] == 'udp' else 0
-                vector['protocol_type_icmp'] = 1 if self.features[feature] == 'icmp' else 0
-            elif feature == 'service':
-                for service in ['http', 'ftp', 'ssh', 'dns', 'smtp', 'telnet']:
-                    vector[f'service_{service}'] = 1 if self.features[feature] == service else 0
-            elif feature == 'flag':
-                for flag in ['SF', 'REJ', 'S0', 'RSTO']:
-                    vector[f'flag_{flag}'] = 1 if self.features[feature] == flag else 0
-            else:
-                vector[feature] = self.features[feature]
-        return vector
-        
-    def __str__(self):
-        return f"{self.timestamp.strftime('%H:%M:%S.%f')[:-3]} {self.src_ip} → {self.dst_ip} [{self.protocol.upper()}] {self.service}"
-
 class Alert:
     def __init__(self, packet, confidence):
         self.id = str(uuid.uuid4())[:8]
@@ -176,51 +53,62 @@ class Alert:
             
     def __str__(self):
         return f"{self.color}[{self.severity}]{Colors.ENDC} {self.timestamp.strftime('%H:%M:%S.%f')[:-3]} {self.packet.src_ip} → {self.packet.dst_ip} ({self.confidence:.2f})"
+    
+    def to_dict(self):
+        """Convert alert to dictionary for logging"""
+        return {
+            "id": self.id,
+            "timestamp": self.timestamp.strftime('%Y-%m-%d %H:%M:%S.%f'),
+            "src_ip": self.packet.src_ip,
+            "dst_ip": self.packet.dst_ip,
+            "protocol": self.packet.protocol,
+            "confidence": self.confidence,
+            "severity": self.severity
+        }
 
-class MLDetectionEngine:
-    def __init__(self):
-        self.model = None
-        self.initialize_model()
+class Logger:
+    def __init__(self, enabled=True):
+        self.enabled = enabled
+        self.log_file = f"nids_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        self.logs = []
         
-    def initialize_model(self):
-        """Create and train a simple ML model for intrusion detection"""
-        print(f"{Colors.YELLOW}[*] Initializing machine learning model...{Colors.ENDC}")
-        
-        # Generate sample training data
-        X_train = []
-        y_train = []
-        
-        # Generate 1000 sample packets for training
-        for _ in range(1000):
-            packet = NetworkPacket()
-            feature_vector = packet.get_feature_vector()
-            X_train.append(list(feature_vector.values()))
-            y_train.append(1 if packet.is_attack else 0)
+    def log_packet(self, packet, is_malicious, confidence=0.0):
+        """Log packet information"""
+        if not self.enabled:
+            return
             
-        # Train the model
-        self.model = RandomForestClassifier(n_estimators=100, random_state=42)
-        self.model.fit(X_train, y_train)
-        print(f"{Colors.GREEN}[+] Model training complete!{Colors.ENDC}")
+        log_entry = {
+            "timestamp": packet.timestamp.strftime('%Y-%m-%d %H:%M:%S.%f'),
+            "src_ip": packet.src_ip,
+            "dst_ip": packet.dst_ip,
+            "protocol": packet.protocol,
+            "is_malicious": is_malicious,
+            "confidence": confidence if is_malicious else 0.0
+        }
         
-    def analyze_packet(self, packet):
-        """Analyze a packet and determine if it's an attack"""
-        # Extract features
-        feature_vector = packet.get_feature_vector()
-        X = [list(feature_vector.values())]
+        self.logs.append(log_entry)
         
-        # Make prediction
-        is_attack = self.model.predict(X)[0]
-        confidence = max(self.model.predict_proba(X)[0])
-        
-        return is_attack, confidence
+    def save_logs(self):
+        """Save logs to file"""
+        if not self.enabled or not self.logs:
+            return False
+            
+        try:
+            with open(self.log_file, 'w') as f:
+                json.dump(self.logs, f, indent=2)
+            return True
+        except Exception as e:
+            print(f"Error saving logs: {e}")
+            return False
 
 class NIDSTerminalUI:
     def __init__(self, stdscr):
         self.stdscr = stdscr
-        self.rows, self.cols = self.stdscr.getmaxyx()
         self.running = True
-        self.normal_packets = deque(maxlen=30)  # Store last 30 normal packets
-        self.malicious_packets = deque(maxlen=30)  # Store last 30 malicious packets
+        self.normal_packets = deque(maxlen=40)  # Store last 40 normal packets
+        self.malicious_packets = deque(maxlen=40)  # Store last 40 malicious packets
+        self.alerts = deque(maxlen=10)  # Store last 10 alerts for display
+        self.logger = Logger()
         self.stats = {
             'total_packets': 0,
             'normal_packets': 0,
@@ -228,110 +116,243 @@ class NIDSTerminalUI:
             'detection_rate': 0,
             'tcp_packets': 0,
             'udp_packets': 0,
-            'icmp_packets': 0
+            'icmp_packets': 0,
+            'high_severity': 0,
+            'medium_severity': 0,
+            'low_severity': 0,
+            'start_time': datetime.datetime.now(),
+            'last_alert_time': None
         }
         
         # Initialize curses
         curses.start_color()
         curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_GREEN, -1)  # Normal
-        curses.init_pair(2, curses.COLOR_RED, -1)    # Malicious
-        curses.init_pair(3, curses.COLOR_YELLOW, -1) # Headers/Status
-        curses.init_pair(4, curses.COLOR_CYAN, -1)   # Info
-        curses.init_pair(5, curses.COLOR_MAGENTA, -1) # Highlights
-        curses.init_pair(6, curses.COLOR_WHITE, curses.COLOR_RED) # Alerts
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_GREEN) # Success
+        curses.init_pair(1, curses.COLOR_GREEN, -1)    # Normal
+        curses.init_pair(2, curses.COLOR_RED, -1)      # Malicious
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)   # Headers/Status
+        curses.init_pair(4, curses.COLOR_CYAN, -1)     # Info
+        curses.init_pair(5, curses.COLOR_MAGENTA, -1)  # Highlights
+        curses.init_pair(6, curses.COLOR_WHITE, curses.COLOR_RED)     # High Alerts
+        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_GREEN)   # Success
+        curses.init_pair(8, curses.COLOR_BLACK, curses.COLOR_YELLOW)  # Medium Alerts
+        curses.init_pair(9, curses.COLOR_WHITE, curses.COLOR_BLUE)    # Low Alerts
+        curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_CYAN)   # Info Highlights
+        
+        # Get terminal size
+        self.update_dimensions()
         
         # Hide cursor
         curses.curs_set(0)
+        
+    def update_dimensions(self):
+        """Update dimensions based on current terminal size"""
+        self.rows, self.cols = self.stdscr.getmaxyx()
         
     def draw_border(self):
         """Draw the main interface border and headers"""
         # Clear the screen
         self.stdscr.clear()
         
-        # Draw main border
-        self.stdscr.box()
+        # Draw main border with double lines
+        self.stdscr.addstr(0, 0, "╔" + "═" * (self.cols - 2) + "╗")
+        for i in range(1, self.rows - 1):
+            self.stdscr.addstr(i, 0, "║")
+            self.stdscr.addstr(i, self.cols - 1, "║")
+        self.stdscr.addstr(self.rows - 1, 0, "╚" + "═" * (self.cols - 2) + "╝")
         
         # Draw title
-        title = "[ NETWORK INTRUSION DETECTION SYSTEM ]"
+        title = "[ NEXUS INTRUSION DETECTION SYSTEM ]"
         self.stdscr.addstr(0, (self.cols - len(title)) // 2, title, curses.color_pair(3) | curses.A_BOLD)
         
-        # Draw column headers
-        normal_header = "[ NORMAL TRAFFIC ]"
+        # Draw runtime info
+        runtime = datetime.datetime.now() - self.stats['start_time']
+        runtime_str = f"Runtime: {runtime.seconds // 3600:02d}:{(runtime.seconds % 3600) // 60:02d}:{runtime.seconds % 60:02d}"
+        self.stdscr.addstr(1, self.cols - len(runtime_str) - 2, runtime_str, curses.color_pair(4))
+        
+        # Draw traffic headers
+        normal_header = "[ LEGITIMATE TRAFFIC ]"
         malicious_header = "[ MALICIOUS TRAFFIC ]"
-        col_width = self.cols // 2 - 2
+        col_width = self.cols // 2 - 4
         
         self.stdscr.addstr(2, col_width // 2, normal_header, curses.color_pair(7) | curses.A_BOLD)
         self.stdscr.addstr(2, self.cols // 2 + col_width // 2, malicious_header, curses.color_pair(6) | curses.A_BOLD)
         
-        # Draw column divider
-        for i in range(3, self.rows - 6):
-            self.stdscr.addch(i, self.cols // 2, '|')
+        # Draw column divider with fancy pattern
+        div_middle = self.rows - 13
+        for i in range(3, self.rows - 12):
+            char = "╟" if i == div_middle else "║"
+            self.stdscr.addstr(i, self.cols // 2 - 1, char)
             
+        # Draw horizontal dividers
+        self.stdscr.addstr(self.rows - 12, 1, "╠" + "═" * (self.cols - 4) + "╣")
+        
+        # Draw alerts section header
+        alerts_header = "[ REAL-TIME ALERTS ]"
+        self.stdscr.addstr(self.rows - 11, (self.cols - len(alerts_header)) // 2, alerts_header, curses.color_pair(6) | curses.A_BOLD)
+        
         # Draw status bar
-        status_bar = " PRESS 'Q' TO QUIT | 'P' TO PAUSE/RESUME | 'R' TO RESET STATS "
+        status_bar = " PRESS 'Q' TO QUIT | 'P' TO PAUSE/RESUME | 'R' TO RESET STATS | 'L' TO TOGGLE LOGGING "
         self.stdscr.addstr(self.rows - 1, (self.cols - len(status_bar)) // 2, status_bar, curses.color_pair(3))
         
-        # Draw horizontal line above stats
-        for i in range(1, self.cols - 1):
-            self.stdscr.addch(self.rows - 6, i, '-')
-            
     def draw_stats(self):
-        """Draw statistics at the bottom of the screen"""
+        """Draw statistics dashboard"""
         # Update detection rate
         if self.stats['total_packets'] > 0:
             self.stats['detection_rate'] = (self.stats['malicious_packets'] / self.stats['total_packets']) * 100
         
-        # Format stats strings
-        stats_strings = [
-            f"TOTAL: {self.stats['total_packets']}",
-            f"NORMAL: {self.stats['normal_packets']}",
-            f"MALICIOUS: {self.stats['malicious_packets']}",
-            f"DETECTION: {self.stats['detection_rate']:.1f}%",
-            f"TCP: {self.stats['tcp_packets']}",
-            f"UDP: {self.stats['udp_packets']}",
-            f"ICMP: {self.stats['icmp_packets']}"
+        # Stats box top
+        self.stdscr.addstr(3, 2, "┌" + "─" * 24 + "┐")
+        self.stdscr.addstr(3, self.cols - 28, "┌" + "─" * 24 + "┐")
+        
+        # Traffic stats
+        self.stdscr.addstr(4, 2, "│ TRAFFIC STATISTICS    │", curses.color_pair(3) | curses.A_BOLD)
+        self.stdscr.addstr(4, self.cols - 28, "│ PROTOCOL BREAKDOWN    │", curses.color_pair(3) | curses.A_BOLD)
+        
+        self.stdscr.addstr(5, 2, "├" + "─" * 24 + "┤")
+        self.stdscr.addstr(5, self.cols - 28, "├" + "─" * 24 + "┤")
+        
+        traffic_stats = [
+            f"│ Total Packets: {self.stats['total_packets']:8d} │",
+            f"│ Legitimate:   {self.stats['normal_packets']:8d} │",
+            f"│ Malicious:    {self.stats['malicious_packets']:8d} │",
+            f"│ Detection %:   {self.stats['detection_rate']:7.1f}% │"
         ]
         
-        # Calculate spacing
-        spacing = self.cols // len(stats_strings)
+        protocol_stats = [
+            f"│ TCP:          {self.stats['tcp_packets']:8d} │",
+            f"│ UDP:          {self.stats['udp_packets']:8d} │",
+            f"│ ICMP:         {self.stats['icmp_packets']:8d} │",
+            f"│ Logging:    {'ON ' if self.logger.enabled else 'OFF'} {' ' * 6} │"
+        ]
         
-        # Draw stats
-        for i, stat in enumerate(stats_strings):
-            x_pos = i * spacing + (spacing - len(stat)) // 2
-            self.stdscr.addstr(self.rows - 4, x_pos, stat, curses.color_pair(4) | curses.A_BOLD)
+        for i, stat in enumerate(traffic_stats):
+            self.stdscr.addstr(6 + i, 2, stat, curses.color_pair(4))
+            
+        for i, stat in enumerate(protocol_stats):
+            self.stdscr.addstr(6 + i, self.cols - 28, stat, curses.color_pair(4))
+            
+        # Stats box bottom
+        self.stdscr.addstr(10, 2, "└" + "─" * 24 + "┘")
+        self.stdscr.addstr(10, self.cols - 28, "└" + "─" * 24 + "┘")
+        
+        # Security stats box
+        self.stdscr.addstr(12, 2, "┌" + "─" * 24 + "┐")
+        self.stdscr.addstr(13, 2, "│ SECURITY ALERTS       │", curses.color_pair(3) | curses.A_BOLD)
+        self.stdscr.addstr(14, 2, "├" + "─" * 24 + "┤")
+        
+        security_stats = [
+            f"│ High Severity: {self.stats['high_severity']:7d} │",
+            f"│ Medium:       {self.stats['medium_severity']:7d} │",
+            f"│ Low:          {self.stats['low_severity']:7d} │"
+        ]
+        
+        for i, stat in enumerate(security_stats):
+            color = curses.color_pair(6 if i == 0 else (8 if i == 1 else 9))
+            self.stdscr.addstr(15 + i, 2, stat, color)
+            
+        self.stdscr.addstr(18, 2, "└" + "─" * 24 + "┘")
             
     def draw_packets(self):
         """Draw the packet lists in each column"""
-        col_width = self.cols // 2 - 2
+        col_width = self.cols // 2 - 4
+        
+        # Draw column headers
+        self.stdscr.addstr(3, (self.cols // 4) - 12, "SOURCE", curses.color_pair(5))
+        self.stdscr.addstr(3, (self.cols // 4) + 5, "DESTINATION", curses.color_pair(5))
+        self.stdscr.addstr(3, (self.cols // 4) + 20, "PROTO", curses.color_pair(5))
+        
+        self.stdscr.addstr(3, (self.cols * 3 // 4) - 12, "SOURCE", curses.color_pair(5))
+        self.stdscr.addstr(3, (self.cols * 3 // 4) + 5, "DESTINATION", curses.color_pair(5))
+        self.stdscr.addstr(3, (self.cols * 3 // 4) + 20, "PROTO", curses.color_pair(5))
         
         # Draw normal packets
         for i, packet in enumerate(self.normal_packets):
-            if i < self.rows - 11:  # Leave space for stats and borders
-                packet_str = f"{packet.timestamp.strftime('%H:%M:%S')} | {packet.src_ip} → {packet.dst_ip} | {packet.protocol.upper()}"
-                if len(packet_str) > col_width:
-                    packet_str = packet_str[:col_width - 3] + "..."
-                self.stdscr.addstr(i + 4, 2, packet_str, curses.color_pair(1))
+            if i >= self.rows - 17:  # Limit based on available space
+                break
                 
-        # Draw malicious packets
+            time_str = packet.timestamp.strftime('%H:%M:%S')
+            proto_color = {
+                'tcp': curses.color_pair(1),
+                'udp': curses.color_pair(4),
+                'icmp': curses.color_pair(3)
+            }.get(packet.protocol.lower(), curses.color_pair(1))
+            
+            # Draw with appropriate spacing and color
+            self.stdscr.addstr(i + 4, 4, time_str, curses.color_pair(1))
+            self.stdscr.addstr(i + 4, 14, packet.src_ip, curses.color_pair(1))
+            self.stdscr.addstr(i + 4, 30, packet.dst_ip, curses.color_pair(1))
+            self.stdscr.addstr(i + 4, 46, packet.protocol.upper(), proto_color)
+                
+        # Draw malicious packets with flashing effect for newest entries
         for i, packet in enumerate(self.malicious_packets):
-            if i < self.rows - 11:  # Leave space for stats and borders
-                packet_str = f"{packet.timestamp.strftime('%H:%M:%S')} | {packet.src_ip} → {packet.dst_ip} | {packet.protocol.upper()}"
-                if len(packet_str) > col_width:
-                    packet_str = packet_str[:col_width - 3] + "..."
+            if i >= self.rows - 17:  # Limit based on available space
+                break
                 
-                # Alternate colors for malicious packets for visual effect
-                color = curses.color_pair(2) | (curses.A_BOLD if i % 2 == 0 else 0)
-                self.stdscr.addstr(i + 4, self.cols // 2 + 2, packet_str, color)
+            time_str = packet.timestamp.strftime('%H:%M:%S')
+            
+            # Determine color based on age of packet
+            if i == 0 and not curses.has_colors():
+                # Blink effect for newest packet (terminal dependent)
+                attr = curses.A_BOLD | curses.A_BLINK
+            else:
+                attr = curses.A_BOLD if i < 3 else 0
+            
+            # Draw with appropriate spacing and color
+            self.stdscr.addstr(i + 4, self.cols // 2 + 4, time_str, curses.color_pair(2) | attr)
+            self.stdscr.addstr(i + 4, self.cols // 2 + 14, packet.src_ip, curses.color_pair(2) | attr)
+            self.stdscr.addstr(i + 4, self.cols // 2 + 30, packet.dst_ip, curses.color_pair(2) | attr)
+            self.stdscr.addstr(i + 4, self.cols // 2 + 46, packet.protocol.upper(), curses.color_pair(2) | attr)
+            
+    def draw_alerts(self):
+        """Draw real-time alerts at the bottom of the screen"""
+        available_rows = self.rows - 13  # Space for alerts section
+        
+        # Draw alerts
+        for i, alert in enumerate(self.alerts):
+            if i >= available_rows:
+                break
                 
-    def update(self):
-        """Update the terminal UI"""
-        self.draw_border()
+            # Determine color based on severity
+            if alert.severity == "HIGH":
+                color = curses.color_pair(6)
+            elif alert.severity == "MEDIUM":
+                color = curses.color_pair(8)
+            else:
+                color = curses.color_pair(9)
+                
+            # Format alert text
+            alert_time = alert.timestamp.strftime('%H:%M:%S')
+            alert_text = f"[{alert_time}] [{alert.severity}] {alert.packet.src_ip} → {alert.packet.dst_ip} ({alert.confidence:.2f}) - {alert.packet.protocol.upper()}"
+            
+            # Truncate if needed
+            if len(alert_text) > self.cols - 4:
+                alert_text = alert_text[:self.cols - 7] + "..."
+                
+            # Draw alert
+            self.stdscr.addstr(self.rows - 10 + i, 2, alert_text, color | curses.A_BOLD)
+    
+    # In the NIDSTerminalUI class, modify the update method:
+	# In the NIDSTerminalUI class, modify the update method:
+def update(self):
+    """Update the terminal UI more efficiently"""
+    try:
+        # Only redraw if the terminal size has changed
+        new_rows, new_cols = self.stdscr.getmaxyx()
+        full_redraw = (new_rows != self.rows or new_cols != self.cols)
+        
+        if full_redraw:
+            self.update_dimensions()
+            self.draw_border()
+        
+        # Always update dynamic content
         self.draw_stats()
         self.draw_packets()
+        self.draw_alerts()
         self.stdscr.refresh()
-        
+    except curses.error:
+        # Handle curses errors (usually from terminal resizing)
+        pass
+            
     def add_normal_packet(self, packet):
         """Add a normal packet to the display"""
         self.normal_packets.appendleft(packet)
@@ -339,27 +360,57 @@ class NIDSTerminalUI:
         self.stats['total_packets'] += 1
         
         # Update protocol stats
-        if packet.protocol == 'tcp':
+        if packet.protocol.lower() == 'tcp':
             self.stats['tcp_packets'] += 1
-        elif packet.protocol == 'udp':
+        elif packet.protocol.lower() == 'udp':
             self.stats['udp_packets'] += 1
-        elif packet.protocol == 'icmp':
+        elif packet.protocol.lower() == 'icmp':
             self.stats['icmp_packets'] += 1
             
-    def add_malicious_packet(self, packet):
-        """Add a malicious packet to the display"""
+        # Log packet
+        self.logger.log_packet(packet, False)
+            
+    def add_malicious_packet(self, packet, confidence):
+        """Add a malicious packet to the display and create alert"""
         self.malicious_packets.appendleft(packet)
         self.stats['malicious_packets'] += 1
         self.stats['total_packets'] += 1
         
         # Update protocol stats
-        if packet.protocol == 'tcp':
+        if packet.protocol.lower() == 'tcp':
             self.stats['tcp_packets'] += 1
-        elif packet.protocol == 'udp':
+        elif packet.protocol.lower() == 'udp':
             self.stats['udp_packets'] += 1
-        elif packet.protocol == 'icmp':
+        elif packet.protocol.lower() == 'icmp':
             self.stats['icmp_packets'] += 1
             
+        # Create and add alert
+        alert = Alert(packet, confidence)
+        self.alerts.appendleft(alert)
+        self.stats['last_alert_time'] = datetime.datetime.now()
+        
+        # Update severity stats
+        if alert.severity == "HIGH":
+            self.stats['high_severity'] += 1
+        elif alert.severity == "MEDIUM":
+            self.stats['medium_severity'] += 1
+        else:
+            self.stats['low_severity'] += 1
+            
+        # Log packet
+        self.logger.log_packet(packet, True, confidence)
+        
+    def toggle_logging(self):
+        """Toggle logging on/off"""
+        self.logger.enabled = not self.logger.enabled
+        return self.logger.enabled
+            
+class NIDS:
+    def __init__(self):
+        self.ml_engine = MLDetectionEngine()
+        self.paused = False
+        self.traffic_generator = None
+        
 class NIDS:
     def __init__(self):
         self.ml_engine = MLDetectionEngine()
@@ -368,9 +419,12 @@ class NIDS:
         
     def generate_traffic(self, ui):
         """Generate network traffic and analyze it"""
+        update_counter = 0
+        batch_size = 10  # Process packets in batches
+        
         while ui.running:
             if not self.paused:
-                # Generate 1-5 packets
+                # Generate multiple packets before updating UI
                 num_packets = random.randint(1, 5)
                 for _ in range(num_packets):
                     # Create a packet
@@ -381,16 +435,18 @@ class NIDS:
                     
                     # Add to appropriate list
                     if is_attack:
-                        ui.add_malicious_packet(packet)
+                        ui.add_malicious_packet(packet, confidence)
                     else:
                         ui.add_normal_packet(packet)
                     
-                    # Update UI
-                    ui.update()
+                    # Only update UI periodically
+                    update_counter += 1
+                    if update_counter >= batch_size:
+                        ui.update()
+                        update_counter = 0
             
             # Sleep to control traffic rate
-            time.sleep(0.2)
-            
+            time.sleep(0.5)  # Increased from 0.2
     def run(self, stdscr):
         """Main NIDS function"""
         # Initialize the UI
@@ -415,6 +471,10 @@ class NIDS:
                 elif key == ord('r') or key == ord('R'):
                     # Reset stats
                     ui.stats = {k: 0 for k in ui.stats}
+                    ui.stats['start_time'] = datetime.datetime.now()
+                elif key == ord('l') or key == ord('L'):
+                    # Toggle logging
+                    ui.toggle_logging()
                 
                 # Update UI
                 ui.update()
@@ -424,40 +484,198 @@ class NIDS:
                 
             except KeyboardInterrupt:
                 break
-                
-        # Clean up
+        
+        # Ask about saving logs if logging was enabled
         curses.endwin()
-            
-def main():
-    """Main entry point"""
-    # Clear terminal
+        if ui.logger.enabled and ui.logger.logs:
+            save_logs = input(f"{Colors.YELLOW}Do you want to save logs to file? (y/n): {Colors.ENDC}")
+            if save_logs.lower() == 'y':
+                if ui.logger.save_logs():
+                    print(f"{Colors.GREEN}[+] Logs saved to {ui.logger.log_file}{Colors.ENDC}")
+                else:
+                    print(f"{Colors.RED}[!] Failed to save logs{Colors.ENDC}")
+
+def display_startup_animation():
+    """Display an animated startup sequence"""
     os.system('cls' if os.name == 'nt' else 'clear')
     
-    # Print banner
-    banner = f"""
+    # ASCII art for animation frames
+    frames = [
+        [
+            f"{Colors.BLUE}╔════════════════════════════════════════════════════════════════╗{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}╚════════════════════════════════════════════════════════════════╝{Colors.ENDC}"
+        ],
+        [
+            f"{Colors.BLUE}╔════════════════════════════════════════════════════════════════╗{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██{Colors.BLUE}                                                          ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██{Colors.BLUE}                                                          ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██{Colors.BLUE}                                                          ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██{Colors.BLUE}                                                          ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}███████{Colors.BLUE}                                                     ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}╚════════════════════════════════════════════════════════════════╝{Colors.ENDC}"
+        ],
+        [
+            f"{Colors.BLUE}╔════════════════════════════════════════════════════════════════╗{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}███╗   ██╗{Colors.BLUE}                                                  ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}████╗  ██║{Colors.BLUE}                                                  ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██╔██╗ ██║{Colors.BLUE}                                                  ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██║╚██╗██║{Colors.BLUE}                                                  ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██║ ╚████║{Colors.BLUE}                                                  ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}╚═╝  ╚═══╝{Colors.BLUE}                                                  ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}╚════════════════════════════════════════════════════════════════╝{Colors.ENDC}"
+        ],
+        [
+            f"{Colors.BLUE}╔════════════════════════════════════════════════════════════════╗{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}███╗   ██╗███████╗{Colors.BLUE}                                          ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}████╗  ██║██╔════╝{Colors.BLUE}                                          ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██╔██╗ ██║█████╗{Colors.BLUE}                                            ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██║╚██╗██║██╔══╝{Colors.BLUE}                                            ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██║ ╚████║███████╗{Colors.BLUE}                                          ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}╚═╝  ╚═══╝╚══════╝{Colors.BLUE}                                          ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}╚════════════════════════════════════════════════════════════════╝{Colors.ENDC}"
+        ],
+        [
+            f"{Colors.BLUE}╔════════════════════════════════════════════════════════════════╗{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}███╗   ██╗███████╗██╗  ██╗{Colors.BLUE}                                  ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}████╗  ██║██╔════╝╚██╗██╔╝{Colors.BLUE}                                  ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██╔██╗ ██║█████╗   ╚███╔╝{Colors.BLUE}                                   ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██║╚██╗██║██╔══╝   ██╔██╗{Colors.BLUE}                                   ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██║ ╚████║███████╗██╔╝ ██╗{Colors.BLUE}                                  ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝{Colors.BLUE}                                  ║{Colors.ENDC}",
+f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}╚════════════════════════════════════════════════════════════════╝{Colors.ENDC}"
+        ],
+        [
+            f"{Colors.BLUE}╔════════════════════════════════════════════════════════════════╗{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗{Colors.BLUE}                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝{Colors.BLUE}                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗{Colors.BLUE}                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║{Colors.BLUE}                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║{Colors.BLUE}                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║  {Colors.RED}╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝{Colors.BLUE}                ║{Colors.ENDC}",
+            f"{Colors.BLUE}║                                                                ║{Colors.ENDC}",
+            f"{Colors.BLUE}╚════════════════════════════════════════════════════════════════╝{Colors.ENDC}"
+        ]
+    ]
+    
+    # Loading messages
+    loading_messages = [
+        f"{Colors.GREEN}[+] Initializing system components...{Colors.ENDC}",
+        f"{Colors.GREEN}[+] Loading machine learning models...{Colors.ENDC}",
+        f"{Colors.GREEN}[+] Configuring network interfaces...{Colors.ENDC}",
+        f"{Colors.GREEN}[+] Establishing detection parameters...{Colors.ENDC}",
+        f"{Colors.GREEN}[+] Calibrating threat detection algorithms...{Colors.ENDC}",
+        f"{Colors.YELLOW}[*] Starting Nexus IDS engine...{Colors.ENDC}"
+    ]
+    
+    # Display each frame with loading messages
+    for i, frame in enumerate(frames):
+        os.system('cls' if os.name == 'nt' else 'clear')
+        for line in frame:
+            print(line)
+        
+        # Add loading message below the frame
+        if i < len(loading_messages):
+            print("\n" + loading_messages[i])
+        
+        # Add progressing dots animation
+        dots = "." * (i + 1)
+        print(f"\n{Colors.CYAN}Loading{dots.ljust(6)}{Colors.ENDC}")
+        
+        # Add progress bar
+        bar_length = 50
+        progress = int((i + 1) / len(frames) * bar_length)
+        bar = "█" * progress + "░" * (bar_length - progress)
+        percentage = int((i + 1) / len(frames) * 100)
+        print(f"{Colors.CYAN}[{bar}] {percentage}%{Colors.ENDC}")
+        
+        # Show advanced system information
+        if i > 2:
+            print(f"\n{Colors.YELLOW}System Information:{Colors.ENDC}")
+            print(f"{Colors.CYAN}► ML Model Version: 4.2.1{Colors.ENDC}")
+            print(f"{Colors.CYAN}► Signature Database: {datetime.datetime.now().strftime('%Y-%m-%d')}{Colors.ENDC}")
+            print(f"{Colors.CYAN}► Detection Engine: Advanced Heuristic v3{Colors.ENDC}")
+            
+        time.sleep(0.6)  # Slow down animation for better effect
+    
+    # Final message before starting
+    os.system('cls' if os.name == 'nt' else 'clear')
+    
+    # Full logo
+    logo = f"""
 {Colors.BLUE}╔═════════════════════════════════════════════════════════════════╗
 ║                                                                 ║
-║  {Colors.RED}{Colors.BOLD}███╗   ██╗██╗██████╗ ███████╗{Colors.BLUE}                              ║
-║  {Colors.RED}{Colors.BOLD}████╗  ██║██║██╔══██╗██╔════╝{Colors.BLUE}                              ║
-║  {Colors.RED}{Colors.BOLD}██╔██╗ ██║██║██║  ██║███████╗{Colors.BLUE}                              ║
-║  {Colors.RED}{Colors.BOLD}██║╚██╗██║██║██║  ██║╚════██║{Colors.BLUE}                              ║
-║  {Colors.RED}{Colors.BOLD}██║ ╚████║██║██████╔╝███████║{Colors.BLUE}                              ║
-║  {Colors.RED}{Colors.BOLD}╚═╝  ╚═══╝╚═╝╚═════╝ ╚══════╝{Colors.BLUE}                              ║
+║  {Colors.RED}{Colors.BOLD}███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗{Colors.BLUE}                ║
+║  {Colors.RED}{Colors.BOLD}████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝{Colors.BLUE}                ║
+║  {Colors.RED}{Colors.BOLD}██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗{Colors.BLUE}                ║
+║  {Colors.RED}{Colors.BOLD}██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║{Colors.BLUE}                ║
+║  {Colors.RED}{Colors.BOLD}██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║{Colors.BLUE}                ║
+║  {Colors.RED}{Colors.BOLD}╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝{Colors.BLUE}                ║
 ║                                                                 ║
 ║     {Colors.YELLOW}Network Intrusion Detection System with ML{Colors.BLUE}                ║
 ║     {Colors.CYAN}(c) 2025 - Advanced Security Tools{Colors.BLUE}                         ║
 ║                                                                 ║
 ╚═════════════════════════════════════════════════════════════════╝{Colors.ENDC}
-    """
-    print(banner)
-    print(f"{Colors.GREEN}[+] Starting NIDS with Machine Learning...{Colors.ENDC}")
-    time.sleep(1)
+"""
+    print(logo)
+    
+    # Simulate system initialization messages with gradual progress
+    startup_messages = [
+        "Initializing machine learning engine...",
+        "Loading network packet analyzers...",
+        "Setting up real-time monitoring...",
+        "Calibrating detection thresholds...",
+        "Establishing logging services...",
+        "Configuring user interface..."
+    ]
+    
+    for msg in startup_messages:
+        sys.stdout.write(f"{Colors.GREEN}[+] {msg}{Colors.ENDC}")
+        sys.stdout.flush()
+        
+        # Simulate variable processing time
+        delay = 0.1
+        for _ in range(3):
+            time.sleep(delay)
+            sys.stdout.write(".")
+            sys.stdout.flush()
+            delay += 0.05
+            
+        print(" Done!")
+        time.sleep(0.2)
+        
+    print(f"\n{Colors.YELLOW}[*] System initialized. Starting monitoring interface...{Colors.ENDC}")
+    time.sleep(1.5)
+
+def main():
+    """Main entry point"""
+    # Display startup animation
+    display_startup_animation()
     
     # Start NIDS with curses
     nids = NIDS()
     curses.wrapper(nids.run)
     
-    print(f"{Colors.GREEN}[+] NIDS shutdown complete. Thank you for using our tool!{Colors.ENDC}")
+    # Shutdown message
+    print(f"\n{Colors.GREEN}[+] Nexus IDS shutdown complete.{Colors.ENDC}")
+    print(f"{Colors.YELLOW}Thank you for using our security monitoring tool!{Colors.ENDC}")
 
 if __name__ == "__main__":
     main()
