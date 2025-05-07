@@ -27,26 +27,23 @@ import pygame
 import numpy
 import math
 
-# Ensure scapy has SSL/TLS support
-try:
-    from scapy.layers.ssl import TLS
-except ImportError:
-    TLS = None
-
 class AdvancedNexusNIDS:
     def __init__(self):
         self.console = Console()
         self.alerts = []
         self.malicious_traffic = []
         self.normal_traffic = []
-        self.encrypted_traffic = []  # New list for encrypted traffic
         self.is_running = True
         self.animation_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self.frame_idx = 0
         self.start_time = datetime.now()
 
         # Initialize audio system
-        pygame.mixer.init()
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+        except pygame.error as e:
+            print(f"Error initializing audio system: {e}")
         
         # Create the alert sound (a simple beep using pygame)
         self.alert_frequency = 440  # Hz (A4 note)
@@ -71,13 +68,6 @@ class AdvancedNexusNIDS:
         self.last_alert_time = datetime.now()
         self.alert_cooldown = timedelta(seconds=5)  # Minimum time between alerts
         
-        # Key rotation intervals for encryption protocols (in seconds)
-        self.key_rotation_intervals = {
-            "TLS": 3600,  # 1 hour
-            "SSL": 3600,  # 1 hour (deprecated, included for completeness)
-            "SSH": 7200   # 2 hours
-        }
-        
         # Custom ASCII Banner
         self.ascii_banner = """
     ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗    ██╗██████╗ ███████╗
@@ -99,10 +89,6 @@ class AdvancedNexusNIDS:
         self.known_services = defaultdict(set)
         self.threat_scores = defaultdict(float)
         self.baseline_established = False
-        
-        # Add scan tracking for Nmap detection
-        self.port_scan_window = timedelta(seconds=10)  # Time window to detect port scans
-        self.port_scan_history = defaultdict(list)  # Track scanned ports by IP
        
         # Network statistics
         self.bytes_received = 0
@@ -113,19 +99,13 @@ class AdvancedNexusNIDS:
         self.protocol_stats = defaultdict(int)
        
         # Enhanced configuration
-        self.scan_threshold = 4  # Lowered from 5 to better detect nmap scans
+        self.scan_threshold = 5
         self.connection_threshold = 50
         self.threat_score_threshold = 7.0
         self.malicious_ports = {22, 23, 445, 3389, 5900}
-        
-        # Add common nmap signature ports
-        self.nmap_signature_ports = {80, 443, 21, 22, 25, 53, 110, 111, 135, 139, 445, 3389}
-        
         self.suspicious_patterns = {
             b'eval(', b'exec(', b'system(', b'cmd.exe', b'/bin/sh',
-            b'SELECT', b'UNION', b'DROP TABLE', b'rm -rf', b'wget',
-            # Add nmap signature patterns
-            b'Nmap', b'PORT STATE SERVICE', b'Host discovery'
+            b'SELECT', b'UNION', b'DROP TABLE', b'rm -rf', b'wget'
         }
        
         # Banner configuration
@@ -291,8 +271,7 @@ class AdvancedNexusNIDS:
         )
 
     def generate_traffic_panels(self):
-        """Generates traffic monitoring panels, including encrypted traffic"""
-        # Normal Traffic Table
+        """Generates traffic monitoring panels"""
         normal_table = Table(show_header=True, header_style="bold green", box=box.ROUNDED)
         normal_table.add_column("Time", style="cyan")
         normal_table.add_column("Source", style="bright_white")
@@ -305,43 +284,22 @@ class AdvancedNexusNIDS:
                 traffic['protocol']
             )
            
-        # Malicious Traffic Table
         malicious_table = Table(show_header=True, header_style="bold red", box=box.ROUNDED)
         malicious_table.add_column("Time", style="cyan")
         malicious_table.add_column("Source", style="bright_white")
         malicious_table.add_column("Threat Score", style="bright_red")
-        malicious_table.add_column("Type", style="bright_yellow")
        
         for traffic in self.malicious_traffic[-5:]:
-            threat_type = traffic.get('threat_type', 'Unknown')
             malicious_table.add_row(
                 traffic['timestamp'].strftime("%H:%M:%S"),
                 traffic['source_ip'],
-                f"{traffic['threat_score']:.1f}",
-                threat_type
+                f"{traffic['threat_score']:.1f}"
             )
            
-        # Encrypted Traffic Table
-        encrypted_table = Table(show_header=True, header_style="bold blue", box=box.ROUNDED)
-        encrypted_table.add_column("Time", style="cyan")
-        encrypted_table.add_column("Source", style="bright_white")
-        encrypted_table.add_column("Protocol", style="bright_blue")
-        encrypted_table.add_column("Key Rotation", style="bright_cyan")
-       
-        for traffic in self.encrypted_traffic[-5:]:
-            protocol = traffic.get('protocol', 'Unknown')
-            key_rotation = self.key_rotation_intervals.get(protocol, 0)
-            encrypted_table.add_row(
-                traffic['timestamp'].strftime("%H:%M:%S"),
-                traffic['source_ip'],
-                protocol,
-                f"{key_rotation}s"
-            )
-           
-        return normal_table, malicious_table, encrypted_table
+        return normal_table, malicious_table
 
     def generate_display(self):
-        """Generates the main display layout with encrypted traffic panel"""
+        """Generates the main display layout"""
         layout = Layout()
         layout.split_column(
             Layout(name="banner", size=10),
@@ -354,8 +312,7 @@ class AdvancedNexusNIDS:
         )
         layout["traffic"].split_column(
             Layout(name="normal_traffic"),
-            Layout(name="malicious_traffic"),
-            Layout(name="encrypted_traffic")  # New panel for encrypted traffic
+            Layout(name="malicious_traffic")
         )
 
         layout["banner"].update(Panel(
@@ -376,7 +333,7 @@ class AdvancedNexusNIDS:
             border_style="green"
         ))
 
-        normal_table, malicious_table, encrypted_table = self.generate_traffic_panels()
+        normal_table, malicious_table = self.generate_traffic_panels()
        
         layout["normal_traffic"].update(Panel(
             normal_table,
@@ -388,12 +345,6 @@ class AdvancedNexusNIDS:
             malicious_table,
             title="⚠️ Malicious Traffic",
             border_style="red"
-        ))
-       
-        layout["encrypted_traffic"].update(Panel(
-            encrypted_table,
-            title="🔐 Encrypted Traffic",
-            border_style="blue"
         ))
 
         layout["stats"].update(self.generate_stats_panel())
@@ -412,71 +363,16 @@ class AdvancedNexusNIDS:
     ██ ██  ██ █████     ███   ██    ██ ███████
     ██  ██ ██ ██       ██ ██  ██    ██      ██
     ██   ████ ███████ ██   ██  ██████  ███████
-                -JIVANT LOGANATHAN
+    			    -JIVANT LOGANATHAN
     {self.banner_frames[frame_index]} Advanced Network Defense System {self.banner_frames[(frame_index + 4) % len(self.banner_frames)]}
          Securing Networks, Protecting Data
 """
         return Text(banner, style=self.banner_colors[color_index])
 
-    def is_port_scan(self, src_ip):
-        """Detects if an IP is conducting a port scan"""
-        if src_ip not in self.port_scan_history:
-            return False
-            
-        # Get port access history for the scan detection window
-        now = datetime.now()
-        scan_window_start = now - self.port_scan_window
-        
-        # Filter to only include port accesses within the window
-        recent_accesses = [access for access in self.port_scan_history[src_ip] 
-                          if access['timestamp'] >= scan_window_start]
-        
-        if not recent_accesses:
-            return False
-            
-        # Extract unique ports accessed
-        unique_ports = set(access['port'] for access in recent_accesses)
-        
-        # If many unique ports accessed in short time, likely a port scan
-        if len(unique_ports) >= self.scan_threshold:
-            # Check if there are typical nmap scan signature ports
-            nmap_signature_ports_found = unique_ports.intersection(self.nmap_signature_ports)
-            if len(nmap_signature_ports_found) >= 2:  # At least 2 signature ports
-                return True
-                
-            # Check for sequential port scanning (common in nmap)
-            port_list = sorted(list(unique_ports))
-            for i in range(len(port_list) - 1):
-                if port_list[i+1] - port_list[i] == 1:  # Sequential ports
-                    return True
-                    
-            # Check for general port scanning
-            return len(unique_ports) >= self.scan_threshold * 2  # Higher threshold for general scanning
-            
-        return False
-
-    def is_syn_scan(self, packet):
-        """Detects SYN scan (half-open connections typical of nmap)"""
-        if packet.haslayer(scapy.TCP):
-            # Check for SYN packet with no ACK (typical of nmap SYN scan)
-            if packet[scapy.TCP].flags == 2:  # SYN flag only
-                return True
-        return False
-
     def is_malicious_packet(self, packet):
         """Checks if a packet is potentially malicious"""
         if not packet.haslayer(scapy.IP):
             return False
-            
-        src_ip = packet[scapy.IP].src
-        
-        # Check if this IP is conducting a port scan
-        if self.is_port_scan(src_ip):
-            return True
-        
-        # Check if it's a SYN scan
-        if self.is_syn_scan(packet):
-            return True
            
         if packet.haslayer(scapy.TCP):
             if packet[scapy.TCP].dport in self.malicious_ports:
@@ -487,6 +383,7 @@ class AdvancedNexusNIDS:
             if any(pattern in payload for pattern in self.suspicious_patterns):
                 return True
                
+        src_ip = packet[scapy.IP].src
         if (len(self.port_access_history[src_ip]) > self.scan_threshold or
             self.connection_count[src_ip] > self.connection_threshold):
             return True
@@ -499,126 +396,20 @@ class AdvancedNexusNIDS:
             return 'TCP'
         elif packet.haslayer(scapy.UDP):
             return 'UDP'
-        elif packet.haslayer(scapy.ICMP):
-            return 'ICMP'
         return 'Other'
-
-    def detect_encryption_protocol(self, packet):
-        """Detects encryption protocols in the packet"""
-        if not packet.haslayer(scapy.IP) or not packet.haslayer(scapy.TCP):
-            return None
-            
-        src_ip = packet[scapy.IP].src
-        dst_ip = packet[scapy.IP].dst
-        dst_port = packet[scapy.TCP].dport
-        timestamp = datetime.now()
-        
-        # Check for TLS/SSL
-        if TLS and packet.haslayer(TLS):
-            return {
-                'timestamp': timestamp,
-                'source_ip': src_ip,
-                'dest_ip': dst_ip,
-                'protocol': 'TLS'
-            }
-        elif dst_port == 443:  # Fallback for HTTPS
-            return {
-                'timestamp': timestamp,
-                'source_ip': src_ip,
-                'dest_ip': dst_ip,
-                'protocol': 'TLS'
-            }
-        
-        # Check for SSH
-        if dst_port == 22 and packet.haslayer(scapy.Raw):
-            payload = bytes(packet[scapy.Raw].load)
-            if payload.startswith(b'SSH-'):
-                return {
-                    'timestamp': timestamp,
-                    'source_ip': src_ip,
-                    'dest_ip': dst_ip,
-                    'protocol': 'SSH'
-                }
-                
-        return None
 
     def update_tracking_data(self, packet):
         """Updates packet tracking data"""
-        if not packet.haslayer(scapy.IP):
-            return
-            
         src_ip = packet[scapy.IP].src
         self.connection_count[src_ip] += 1
        
         if packet.haslayer(scapy.TCP):
             dst_port = packet[scapy.TCP].dport
-            
-            # Update regular port access history
             self.port_access_history[src_ip].append((datetime.now(), dst_port))
-            
-            # Update port scan detection history
-            self.port_scan_history[src_ip].append({
-                'timestamp': datetime.now(),
-                'port': dst_port,
-                'flags': packet[scapy.TCP].flags
-            })
-            
-            # Cleanup old entries in port scan history
-            self.cleanup_port_scan_history(src_ip)
-
-    def cleanup_port_scan_history(self, src_ip):
-        """Removes entries older than the scan window from port scan history"""
-        if src_ip not in self.port_scan_history:
-            return
-            
-        now = datetime.now()
-        scan_window_start = now - self.port_scan_window
-        
-        self.port_scan_history[src_ip] = [
-            entry for entry in self.port_scan_history[src_ip]
-            if entry['timestamp'] >= scan_window_start
-        ]
-
-    def get_threat_type(self, packet, threat_score):
-        """Determines the type of threat based on packet analysis"""
-        if not packet.haslayer(scapy.IP):
-            return "Unknown"
-            
-        src_ip = packet[scapy.IP].src
-        
-        if self.is_port_scan(src_ip):
-            return "Port Scan"
-            
-        if self.is_syn_scan(packet):
-            return "SYN Scan"
-            
-        if packet.haslayer(scapy.TCP) and packet[scapy.TCP].dport in self.malicious_ports:
-            return "Malicious Port"
-            
-        if packet.haslayer(scapy.Raw):
-            payload = bytes(packet[scapy.Raw].load)
-            if any(pattern in payload for pattern in self.suspicious_patterns):
-                return "Suspicious Payload"
-                
-        if len(self.port_access_history[src_ip]) > self.scan_threshold:
-            return "Unusual Port Activity"
-            
-        if self.connection_count[src_ip] > self.connection_threshold:
-            return "Connection Flood"
-            
-        return "Suspicious Activity"
 
     def calculate_threat_score(self, src_ip, packet):
         """Calculates a threat score for a given packet"""
         score = 0.0
-        
-        # Check for port scanning
-        if self.is_port_scan(src_ip):
-            score += 8.0  # High score for port scanning
-            
-        # Check for SYN scanning
-        if self.is_syn_scan(packet):
-            score += 7.0  # High score for SYN scanning
        
         if len(self.port_access_history[src_ip]) > self.scan_threshold:
             score += 3.0
@@ -672,24 +463,12 @@ class AdvancedNexusNIDS:
                 traffic for traffic in self.malicious_traffic
                 if traffic['timestamp'] > cutoff_time
             ]
-            self.encrypted_traffic = [
-                traffic for traffic in self.encrypted_traffic
-                if traffic['timestamp'] > cutoff_time
-            ]
            
             # Cleanup old alerts
             self.alerts = [
                 alert for alert in self.alerts
                 if alert['timestamp'] > cutoff_time
             ]
-           
-            # Cleanup old port scan history
-            for src_ip in list(self.port_scan_history.keys()):
-                self.cleanup_port_scan_history(src_ip)
-                
-                # Remove the entry if it's empty
-                if not self.port_scan_history[src_ip]:
-                    del self.port_scan_history[src_ip]
            
             # Reset connection counts periodically
             self.connection_count.clear()
@@ -700,45 +479,24 @@ class AdvancedNexusNIDS:
         """Callback function for packet processing"""
         if packet.haslayer(scapy.IP):
             self.update_network_stats(packet)
-            self.update_tracking_data(packet)
-            
             src_ip = packet[scapy.IP].src
             dst_ip = packet[scapy.IP].dst
             timestamp = datetime.now()
            
-            # Check for encryption protocols
-            encrypted_info = self.detect_encryption_protocol(packet)
-            if encrypted_info:
-                self.encrypted_traffic.append(encrypted_info)
-            
-            # Check for malicious packets
             if self.is_malicious_packet(packet):
                 threat_score = self.calculate_threat_score(src_ip, packet)
-                threat_type = self.get_threat_type(packet, threat_score)
-                
                 self.malicious_traffic.append({
                     'timestamp': timestamp,
                     'source_ip': src_ip,
                     'dest_ip': dst_ip,
                     'protocol': self.get_protocol(packet),
-                    'threat_score': threat_score,
-                    'threat_type': threat_type
+                    'threat_score': threat_score
                 })
+                self.add_alert(f"🚨 Malicious traffic detected from {src_ip}", "HIGH")
                 
-                # Play audio alert for any malicious packet detection
-                self.play_alert()
-                
-                # Add specific alert messages based on threat type
-                if threat_type == "Port Scan":
-                    self.add_alert(f"🚨 Port scan detected from {src_ip}", "HIGH")
-                elif threat_type == "SYN Scan":
-                    self.add_alert(f"🚨 SYN scan (possible nmap) detected from {src_ip}", "HIGH")
-                else:
-                    self.add_alert(f"🚨 Malicious traffic ({threat_type}) detected from {src_ip}", "HIGH")
-                
-                # Update threat score tracking
-                self.threat_scores[src_ip] = max(self.threat_scores[src_ip], threat_score)
-                
+                # Play alert sound for high threat scores
+                if threat_score > self.threat_score_threshold:
+                    self.play_alert()
             else:
                 self.normal_traffic.append({
                     'timestamp': timestamp,
@@ -746,6 +504,8 @@ class AdvancedNexusNIDS:
                     'dest_ip': dst_ip,
                     'protocol': self.get_protocol(packet)
                 })
+
+            self.update_tracking_data(packet)
 
     def add_alert(self, message, severity="LOW"):
         """Adds an alert to the alert list"""
@@ -787,8 +547,7 @@ class AdvancedNexusNIDS:
             "security_stats": {
                 "total_alerts": len(self.alerts),
                 "malicious_traffic_count": len(self.malicious_traffic),
-                "normal_traffic_count": len(self.normal_traffic),
-                "encrypted_traffic_count": len(self.encrypted_traffic)
+                "normal_traffic_count": len(self.normal_traffic)
             },
             "alerts": [
                 {
@@ -803,103 +562,86 @@ class AdvancedNexusNIDS:
                     "timestamp": traffic["timestamp"].isoformat(),
                     "source_ip": traffic["source_ip"],
                     "dest_ip": traffic["dest_ip"],
-                    "threat_score": traffic["threat_score"],
-                    "threat_type": traffic.get("threat_type", "Unknown")
+                    "threat_score": traffic["threat_score"]
                 }
                 for traffic in self.malicious_traffic
-            ],
-            "encrypted_traffic": [
-                {
-                    "timestamp": traffic["timestamp"].isoformat(),
-                    "source_ip": traffic["source_ip"],
-                    "dest_ip": traffic["dest_ip"],
-                    "protocol": traffic["protocol"],
-                    "key_rotation_interval": self.key_rotation_intervals.get(traffic["protocol"], 0)
-                }
-                for traffic in self.encrypted_traffic
             ]
         }
         return report
 
-    def prompt_save_report(self):
-        """Prompts the user to save the monitoring report and continue monitoring"""
+    def save_report(self):
+        """Saves the monitoring report to a file"""
         report = self.generate_report()
-        
+       
         self.console.clear()
         self.print_banner()
         save_report = input("\nWould you like to save the monitoring report? (y/n): ").lower().strip()
-    
+       
         if save_report == 'y':
-            default_filename = f"nexus_report_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
+            default_filename = f"nexus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             filename = input(f"\nEnter filename (default: {default_filename}): ").strip()
-            
+           
             if not filename:
                 filename = default_filename
-                
+           
             if not filename.endswith('.json'):
                 filename += '.json'
-                
+           
             try:
                 with open(filename, 'w') as f:
                     json.dump(report, f, indent=4)
-                self.console.print(f"\n[green]Report successfully saved to [bold]{filename}[/bold][/green]")
+                print(f"\nReport successfully saved to {filename}")
             except Exception as e:
-                self.console.print(f"\n[red]Error saving report: {str(e)}[/red]")
+                print(f"\nError saving report: {str(e)}")
         else:
-            self.console.print("\n[yellow]Report not saved.[/yellow]")
-            
-        # Ask if user wants to continue monitoring
-        continue_monitoring = input("\nContinue monitoring? (y/n): ").lower().strip()
-        return continue_monitoring == 'y'
+            print("\nReport not saved")
+
+    def cleanup(self):
+        """Performs cleanup operations before exit"""
+        self.is_running = False
+        pygame.mixer.quit()  # Clean up audio system
+        self.save_report()
+        print("\nShutting down Nexus Defense Shield...")
+        time.sleep(1)
+
+    def signal_handler(self, signum, frame):
+        """Handles interrupt signals"""
+        self.cleanup()
+        sys.exit(0)
 
     def run(self):
-        """Main method to run the NIDS"""
+        """Main execution method"""
+        # Set up signal handler for graceful termination
+        signal.signal(signal.SIGINT, self.signal_handler)
+       
+        self.console.clear()
         self.show_enhanced_startup_animation()
-        
-        # Start background threads
-        cleanup_thread = threading.Thread(target=self.cleanup_old_data)
-        cleanup_thread.daemon = True
-        cleanup_thread.start()
-        
-        capture_thread = threading.Thread(target=self.start_capture)
-        capture_thread.daemon = True
-        capture_thread.start()
-        
-        # Setup signal handler for graceful exit
-        def signal_handler(sig, frame):
-            self.is_running = False
-            self.console.print("\n[yellow]Shutting down Nexus IDS...[/yellow]")
-            time.sleep(1)
-            continue_monitoring = self.prompt_save_report()
-            if not continue_monitoring:
-                sys.exit(0)
-        
-        signal.signal(signal.SIGINT, signal_handler)
-        
+       
+        # Start monitoring threads
+        threading.Thread(target=self.cleanup_old_data, daemon=True).start()
+        threading.Thread(target=self.start_capture, daemon=True).start()
+       
         # Main display loop
         try:
-            with Live(self.generate_display(), refresh_per_second=4) as live:
+            with Live(self.generate_display(), refresh_per_second=4, screen=True) as live:
                 while self.is_running:
                     live.update(self.generate_display())
                     time.sleep(0.25)
         except KeyboardInterrupt:
-            self.is_running = False
-            self.console.print("\n[yellow]Shutting down Nexus IDS...[/yellow]")
-            time.sleep(1)
-            self.prompt_save_report()
-
-def main():
-    """Entry point for the application"""
-    nids = AdvancedNexusNIDS()
-    
-    try:
-        nids.run()
-    except Exception as e:
-        nids.console.print(f"[red]Critical error: {str(e)}[/red]")
-        with open("nexus_error_log.txt", "a") as f:
-            f.write(f"{datetime.now().isoformat()}: {str(e)}\n")
-    finally:
-        nids.console.print("[green]Thank you for using Advanced Nexus NIDS![/green]")
+            self.cleanup()
+        except Exception as e:
+            print(f"\nFatal error: {str(e)}")
+            self.cleanup()
+            sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    if os.geteuid() != 0:
+        print("This program must be run as root!")
+        sys.exit(1)
+   
+    try:
+        ids = AdvancedNexusNIDS()
+        ids.run()
+    except Exception as e:
+        print(f"Fatal error: {str(e)}")
+        sys.exit(1)
